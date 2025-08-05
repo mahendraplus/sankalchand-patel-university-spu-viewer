@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>SPU Student Directory</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="./assets/css/styles.css" />
+</head>
+<body>
+  <div class="progress-container">
+    <div class="progress-bar" id="progressBar"></div>
+  </div>
+
+  <div class="scroll-buttons">
+    <button class="scroll-btn" id="scrollToTopBtn"><i class="fas fa-arrow-up"></i></button>
+    <button class="scroll-btn" id="scrollToBottomBtn"><i class="fas fa-arrow-down"></i></button>
+  </div>
+
+  <div class="lock-overlay" id="lockOverlay">
+    <h2 class="lock-title">Enter PIN to Access</h2>
+    <div class="pin-display" id="pinDisplay">••••</div>
+    <div class="keypad">
+      <button onclick="appendPin(1)">1</button>
+      <button onclick="appendPin(2)">2</button>
+      <button onclick="appendPin(3)">3</button>
+      <button onclick="appendPin(4)">4</button>
+      <button onclick="appendPin(5)">5</button>
+      <button onclick="appendPin(6)">6</button>
+      <button onclick="appendPin(7)">7</button>
+      <button onclick="appendPin(8)">8</button>
+      <button onclick="appendPin(9)">9</button>
+      
+       <button class="clear" onclick="clearPin()">Clear</button>
+      <button onclick="appendPin(0)">0</button>
+      <button class="enter" onclick="checkPin()">Enter</button>
+    </div>
+    <div class="error-message" id="errorMessage"></div>
+  </div>
+
+  <div class="decrypt-modal" id="decryptModal">
+    <div class="decrypt-content">
+      <h3>🔐 Enter Data Decryption Password</h3>
+      <input type="password" class="decrypt-input" id="decryptPassword" placeholder="Enter decryption password">
+      <button class="decrypt-btn" onclick="decryptData()">Decrypt Data</button>
+      <div class="decrypt-error" id="decryptError"></div>
+    </div>
+  </div>
+
+  <div class="container" id="mainContent" style="display: none;">
+    <header>
+      <h1>StudentSniffer</h1>
+      <div class="creator">created by mahendraplus.github.io</div>
+      <div class="search-container">
+        <i class="fas fa-search search-icon"></i>
+        <input type="text" id="search" placeholder="Search students by name, department, etc..." />
+      </div>
+    </header>
+    
+    <div class="student-list" id="studentList">
+      <div class="loading">
+        <div class="spinner"></div>
+      </div>
+    </div>
+    
+    <div class="pagination" id="pagination">
+      <button id="prevBtn" disabled><i class="fas fa-chevron-left"></i> Previous</button>
+      <div class="page-numbers" id="pageNumbers"></div>
+      <button id="nextBtn">Next <i class="fas fa-chevron-right"></i></button>
+    </div>
+  </div>
+
+  <div class="modal" id="photoModal">
+    <div class="modal-content">
+      <button class="close-modal" onclick="closeModal('photoModal')">&times;</button>
+      <div class="modal-photo-container">
+        <img id="modalPhoto" class="modal-photo" src="" alt="Student Photo">
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="detailsModal">
+    <div class="modal-content">
+      <button class="close-modal" onclick="closeModal('detailsModal')">&times;</button>
+      <div id="modalDetailsContent"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { decompress } from 'https://cdn.skypack.dev/brotli-compress@1.3.3';
+
+    // State management
+    const state = {
+      students: [],
+      filteredData: [],
+      currentPage: 1,
+      perPage: 20,
+      totalPages: 1,
+      enteredPin: "",
+      CORRECT_PIN: "2525"
+    };
+
+    // DOM elements
+    const elements = {
+      container: document.getElementById('studentList'),
+      prevBtn: document.getElementById('prevBtn'),
+      nextBtn: document.getElementById('nextBtn'),
+      pageNumbers: document.getElementById('pageNumbers'),
+      mainContent: document.getElementById('mainContent'),
+      lockOverlay: document.getElementById('lockOverlay'),
+      pinDisplay: document.getElementById('pinDisplay'),
+      errorMessage: document.getElementById('errorMessage'),
+      decryptModal: document.getElementById('decryptModal'),
+      decryptPassword: document.getElementById('decryptPassword'),
+      decryptError: document.getElementById('decryptError'),
+      search: document.getElementById('search'),
+      scrollToTopBtn: document.getElementById('scrollToTopBtn'),
+      scrollToBottomBtn: document.getElementById('scrollToBottomBtn'),
+      progressBar: document.getElementById('progressBar')
+    };
+
+    // Field configurations
+    const fields = {
+      excluded: [
+        'Access Token', 'Login Message', 'photoPath', 'photo', 'id', 'studentId'
+      ],
+      primary: [
+        'Student Full Name', 'Phone Student1', 'Student Display No', 
+        'Enrollment No', 'Student Institute Code', 'Institute Name',
+        'Institute Short Name', 'University Name', 'Course Name',
+        'Program Name', 'Department Name', 'Current Semester',
+        'Current Roll No', 'Current Batch', 'Current Division',
+        'Email', 'Email Alternate', 'Gender', 'Birth Date'
+      ]
+    };
+
+    // EVP key derivation function for AES decryption
+    async function evp(pw, salt) {
+      const e = new TextEncoder();
+      const a = e.encode(pw);
+      const b = new Uint8Array([...a, ...salt]);
+      const h1 = new Uint8Array(await crypto.subtle.digest('SHA-256', b));
+      const h2 = new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array([...h1, ...a, ...salt])));
+      return { key: h1.slice(0, 32), iv: h2.slice(0, 16) };
+    }
+
+    // Initialize the app
+    function init() {
+      setupEventListeners();
+    }
+
+    // PIN functions
+    function appendPin(num) {
+      if (state.enteredPin.length < 4) {
+        state.enteredPin += num;
+        updatePinDisplay();
+      }
+    }
+
+    function clearPin() {
+      state.enteredPin = "";
+      updatePinDisplay();
+      elements.errorMessage.textContent = "";
+    }
+
+    function updatePinDisplay() {
+      const display = state.enteredPin.split('').map(() => '•').join('');
+      elements.pinDisplay.textContent = display || '••••';
+    }
+
+    function checkPin() {
+      if (state.enteredPin === state.CORRECT_PIN) {
+        elements.lockOverlay.style.display = "none";
+        elements.decryptModal.style.display = "flex";
+      } else {
+        elements.errorMessage.textContent = "Incorrect PIN. Try again.";
+        state.enteredPin = "";
+        updatePinDisplay();
+      }
+    }
+
+    // Data decryption - Updated to use the file provider code
+    async function decryptData() {
+      const password = elements.decryptPassword.value;
+      if (!password) {
+        elements.decryptError.textContent = "Please enter a password";
+        return;
+      }
+
+      try {
+        const filename = './assets/maxenc/db.json.br.enc';
+        const r = await fetch(filename);
+        const a = new Uint8Array(await r.arrayBuffer());
+        
+        // Check for OpenSSL salted format
+        if (new TextDecoder().decode(a.slice(0, 8)) !== 'Salted__') {
+          throw Error('Invalid file format');
+        }
+        
+        const salt = a.slice(8, 16);
+        const data = a.slice(16);
+        const { key, iv } = await evp(password, salt);
+        
+        const cryptoKey = await crypto.subtle.importKey(
+          'raw', 
+          key, 
+          'AES-CBC', 
+          false, 
+          ['decrypt']
+        );
+        
+        const dec = new Uint8Array(await crypto.subtle.decrypt(
+          { name: 'AES-CBC', iv }, 
+          cryptoKey, 
+          data
+        ));
+        
+        // Decompress the Brotli-compressed data
+        const txt = new TextDecoder().decode(await decompress(dec));
+        const decryptedData = JSON.parse(txt);
+        
+        elements.decryptModal.style.display = "none";
+        elements.mainContent.style.display = "block";
+        initializeApp(decryptedData);
+      } catch (error) {
+        console.error("Decryption error:", error);
+        elements.decryptError.textContent = "❌ Wrong password or corrupted file";
+      }
+    }
+
+    // App initialization
+    function initializeApp(data) {
+      state.students = data.map(student => {
+        const formattedStudent = {};
+        Object.entries(student).forEach(([key, value]) => {
+          const formattedKey = formatKey(key);
+          if (!fields.excluded.includes(formattedKey)) {
+            formattedStudent[formattedKey] = value;
+          }
+        });
+        return formattedStudent;
+      });
+
+      state.filteredData = [...state.students];
+      state.totalPages = Math.ceil(state.filteredData.length / state.perPage);
+      renderPage(1);
+      setupPagination();
+    }
+
+    // Utility functions
+    function formatKey(key) {
+      return key
+        .replace(/([A-Z])/g, ' $1')
+        .replace(/^./, str => str.toUpperCase())
+        .replace(/Url|Link/gi, '')
+        .trim();
+    }
+
+    function whatsappMessage(name) {
+      return `👋 Hello ${name},
+Just came across this clean and impressive portfolio thought you might like it 👇
+🔗 https://mahendraplus.github.io
+
+💻 Real projects, smart tools, and smooth design
+✨ Simple. Sharp. Worth a look.
+
+And if you ever need any help with cyber or tech stuff, feel free to message me.
+— Max 👨‍💻`;
+    }
+
+    // Rendering functions
+    function renderPage(page) {
+      state.currentPage = page;
+      const start = (page - 1) * state.perPage;
+      const end = start + state.perPage;
+      const batch = state.filteredData.slice(start, end);
+
+      elements.container.innerHTML = '';
+
+      if (batch.length === 0) {
+        elements.container.innerHTML = `
+          <div class="empty-state">
+            <i class="fas fa-user-slash"></i>
+            <p>No students found matching your search.</p>
+          </div>
+        `;
+        return;
+      }
+
+      const fragment = document.createDocumentFragment();
+      batch.forEach(student => {
+        fragment.appendChild(renderStudentCard(student));
+      });
+
+      elements.container.appendChild(fragment);
+      updatePaginationControls();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function renderStudentCard(student) {
+      const card = document.createElement('div');
+      card.className = 'student-card';
+
+      const studentName = student['Student Full Name'] || 'Unknown';
+      const studentPhone = student['Phone Student1'] || 'Not available';
+
+      const primaryInfo = Object.entries(student)
+        .filter(([key]) => fields.primary.includes(key))
+        .sort(([keyA], [keyB]) => fields.primary.indexOf(keyA) - fields.primary.indexOf(keyB))
+        .slice(0, 6);
+
+      const basicInfo = primaryInfo.map(([k, v]) => `
+        <p><strong>${k}:</strong> <span>${v}</span></p>
+      `).join('');
+
+      const buttons = Object.entries(student)
+        .filter(([k, v]) => typeof v === 'string' && v.startsWith('http'))
+        .map(([k, v]) => `
+          <a href="${v}" target="_blank" rel="noopener noreferrer">
+            <i class="fas ${k.includes('linkedin') ? 'fa-linkedin' : k.includes('github') ? 'fa-github' : 'fa-external-link-alt'}"></i>
+            ${k.replace(/URL|url|Link/gi, '')}
+          </a>
+        `).join('');
+
+      const whatsappButton = studentPhone && studentPhone !== 'Not available' ? `
+        <a href="https://wa.me/${studentPhone.replace(/\D/g, '')}?text=${encodeURIComponent(whatsappMessage(studentName))}" 
+           class="whatsapp-btn" target="_blank">
+          <i class="fab fa-whatsapp"></i> WhatsApp
+        </a>
+      ` : '';
+
+      const photoFields = ['Photo Path', 'Photo', 'Student Photo', 'Image'];
+      let photoPath = '';
+      for (const field of photoFields) {
+        if (student[field]) {
+          photoPath = student[field];
+          break;
+        }
+      }
+
+      const imageHTML = photoPath && photoPath.trim() !== ''
+        ? `<img src="${photoPath}" class="student-pic" onerror="handleImageError(this)" onclick="showPhotoModal('${photoPath}')">`
+        : `<div class="no-photo" onclick="handleImageError(this)"><i class="fas fa-user"></i></div>`;
+
+      card.innerHTML = `
+        <div class="student-content">
+          <div class="student-pic-wrapper">${imageHTML}</div>
+          <h3 class="student-name">${studentName}</h3>
+          <div class="student-phone">
+            <i class="fas fa-phone"></i> ${studentPhone}
+          </div>
+          <div class="student-info">${basicInfo}</div>
+          <div class="student-buttons">
+            ${whatsappButton}
+            ${buttons}
+            <button class="show-more" onclick="showDetailsModal(${JSON.stringify(student).replace(/"/g, '&quot;')})">
+              <i class="fas fa-info-circle"></i> Full Details
+            </button>
+          </div>
+        </div>
+      `;
+
+      return card;
+    }
+
+    // Pagination functions
+    function setupPagination() {
+      elements.prevBtn.addEventListener('click', () => {
+        if (state.currentPage > 1) {
+          renderPage(state.currentPage - 1);
+        }
+      });
+
+      elements.nextBtn.addEventListener('click', () => {
+        if (state.currentPage < state.totalPages) {
+          renderPage(state.currentPage + 1);
+        }
+      });
+
+      updatePaginationControls();
+    }
+
+    function updatePaginationControls() {
+      elements.prevBtn.disabled = state.currentPage === 1;
+      elements.nextBtn.disabled = state.currentPage === state.totalPages;
+
+      elements.pageNumbers.innerHTML = '';
+      
+      addPageNumber(1);
+      
+      if (state.currentPage > 3) {
+        const ellipsis = document.createElement('span');
+        ellipsis.textContent = '...';
+        elements.pageNumbers.appendChild(ellipsis);
+      }
+      
+      const start = Math.max(2, state.currentPage - 1);
+      const end = Math.min(state.totalPages - 1, state.currentPage + 1);
+      
+      for (let i = start; i <= end; i++) {
+        addPageNumber(i);
+      }
+      
+      if (state.currentPage < state.totalPages - 2) {
+        const ellipsis = document.createElement('span');
+        ellipsis.textContent = '...';
+        elements.pageNumbers.appendChild(ellipsis);
+      }
+      
+      if (state.totalPages > 1) {
+        addPageNumber(state.totalPages);
+      }
+    }
+
+    function addPageNumber(pageNum) {
+      const pageBtn = document.createElement('button');
+      pageBtn.textContent = pageNum;
+      if (pageNum === state.currentPage) {
+        pageBtn.classList.add('active');
+      }
+      pageBtn.addEventListener('click', () => {
+        renderPage(pageNum);
+      });
+      elements.pageNumbers.appendChild(pageBtn);
+    }
+
+    // Modal functions
+    function showPhotoModal(photoUrl) {
+      const modal = document.getElementById('photoModal');
+      const modalImg = document.getElementById('modalPhoto');
+      modalImg.src = photoUrl;
+      modal.classList.add('active');
+      document.body.style.overflow = 'hidden';
+    }
+
+    function showDetailsModal(student) {
+      const modal = document.getElementById('detailsModal');
+      const modalContent = document.getElementById('modalDetailsContent');
+      
+      const studentInfo = Object.entries(student).filter(([k, v]) => 
+        !k.match(/url|link/i) && v !== '' && v !== null
+      );
+
+      const studentName = student['Student Full Name'] || 'Unknown';
+      const studentPhone = student['Phone Student1'] || 'Not available';
+
+      const photoFields = ['Photo Path', 'Photo', 'Student Photo', 'Image'];
+      let photoPath = '';
+      for (const field of photoFields) {
+        if (student[field]) {
+          photoPath = student[field];
+          break;
+        }
+      }
+
+      const photoSection = photoPath && photoPath.trim() !== ''
+        ? `<div class="modal-photo-container" onclick="showPhotoModal('${photoPath}')">
+            <img src="${photoPath}" class="modal-photo" onerror="this.onerror=null;this.parentNode.innerHTML='<div class=\\'no-photo\\'><i class=\\'fas fa-user\\'></i></div>'">
+          </div>`
+        : '';
+
+      const sortedInfo = [...studentInfo].sort(([keyA], [keyB]) => {
+        const indexA = fields.primary.indexOf(keyA);
+        const indexB = fields.primary.indexOf(keyB);
+        if (indexA !== -1 && indexB !== -1) return indexA - indexB;
+        if (indexA !== -1) return -1;
+        if (indexB !== -1) return 1;
+        return keyA.localeCompare(keyB);
+      });
+
+      const infoSections = sortedInfo.map(([k, v]) => `
+        <p><strong>${k}:</strong> ${v}</p>
+      `).join('');
+
+      const whatsappButton = studentPhone && studentPhone !== 'Not available' ? `
+        <div style="margin-top: 1rem;">
+          <a href="https://wa.me/${studentPhone.replace(/\D/g, '')}?text=${encodeURIComponent(whatsappMessage(studentName))}" 
+             class="whatsapp-btn" target="_blank" style="display: inline-block; padding: 0.75rem 1.5rem; font-size: 1rem;">
+            <i class="fab fa-whatsapp"></i> Send WhatsApp Message
+          </a>
+        </div>
+      ` : '';
+
+      modalContent.innerHTML = `
+        ${photoSection}
+        <div class="modal-info">${infoSections}</div>
+        ${whatsappButton}
+      `;
+      
+      modal.classList.add('active');
+      document.body.style.overflow = 'hidden';
+    }
+
+    function closeModal(modalId) {
+      document.getElementById(modalId).classList.remove('active');
+      document.body.style.overflow = 'auto';
+    }
+
+    function handleImageError(img) {
+      if (img.tagName === 'IMG') {
+        img.onerror = null;
+        img.parentNode.innerHTML = '<div class="no-photo"><i class="fas fa-user"></i></div>';
+      }
+    }
+
+    // Event listeners
+    function setupEventListeners() {
+      // Search functionality
+      elements.search.addEventListener('input', (e) => {
+        const val = e.target.value.toLowerCase().trim();
+        state.filteredData = state.students.filter(student => 
+          Object.values(student).some(
+            v => typeof v === 'string' && v.toLowerCase().includes(val) ||
+                 typeof v === 'number' && v.toString().includes(val)
+          )
+        );
+        state.totalPages = Math.ceil(state.filteredData.length / state.perPage);
+        renderPage(1);
+      });
+
+      // Scroll buttons
+      elements.scrollToTopBtn.addEventListener('click', () => {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      });
+
+      elements.scrollToBottomBtn.addEventListener('click', () => {
+        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+      });
+
+      // Scroll progress bar
+      window.addEventListener('scroll', () => {
+        const scrollTotal = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+        const scrollPosition = window.scrollY;
+        const scrollPercentage = (scrollPosition / scrollTotal) * 100;
+        elements.progressBar.style.width = scrollPercentage + '%';
+      });
+
+      // Handle Enter key in decrypt password field
+      elements.decryptPassword.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+          decryptData();
+        }
+      });
+
+      // Close modals when clicking outside content
+      document.querySelectorAll('.modal').forEach(modal => {
+        modal.addEventListener('click', (e) => {
+          if (e.target === modal) {
+            closeModal(modal.id);
+          }
+        });
+      });
+    }
+
+    // Global functions
+    window.appendPin = appendPin;
+    window.clearPin = clearPin;
+    window.checkPin = checkPin;
+    window.decryptData = decryptData;
+    window.showPhotoModal = showPhotoModal;
+    window.showDetailsModal = showDetailsModal;
+    window.closeModal = closeModal;
+    window.handleImageError = handleImageError;
+
+    // Initialize the app
+    init();
+  </script>
+</body>
+</html>
